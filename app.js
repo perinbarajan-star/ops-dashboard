@@ -64,6 +64,33 @@ function applyFilter(){
   setRange(fromInput.value, toInput.value, null);
 }
 
+// ---- RL Deep Dive tab: its own independent date filter (by RL date), not
+// tied to the main Scheduled-date filter above. ----
+let rlDataMin = null, rlDataMax = null;
+ALL_SLOT_REQUESTS.forEach(r=>{
+  if(!r.date) return;
+  if(!rlDataMin || r.date < rlDataMin) rlDataMin = r.date;
+  if(!rlDataMax || r.date > rlDataMax) rlDataMax = r.date;
+});
+let rlFilterFrom = rlDataMin, rlFilterTo = rlDataMax;
+
+const rlFromInput = document.getElementById('rlDateFrom');
+const rlToInput = document.getElementById('rlDateTo');
+if(rlFromInput && rlToInput){
+  rlFromInput.value = rlFilterFrom; rlToInput.value = rlFilterTo;
+  rlFromInput.min = rlDataMin; rlFromInput.max = rlDataMax;
+  rlToInput.min = rlDataMin; rlToInput.max = rlDataMax;
+  document.getElementById('rlRangeNote').textContent = `RL data covers ${rlDataMin} → ${rlDataMax}`;
+}
+
+function applyRLFilter(){
+  let f = rlFromInput.value, t = rlToInput.value;
+  if(f > t){ const tmp=f; f=t; t=tmp; }
+  rlFilterFrom = f; rlFilterTo = t;
+  rlFromInput.value = f; rlToInput.value = t;
+  renderRLDeepDive();
+}
+
 function csvEscape(v){
   if(v===null || v===undefined) return '';
   const s = String(v);
@@ -804,6 +831,63 @@ function renderAttach(items, orders){
 
   document.getElementById('categoryAttachBody').innerHTML = rows.map(r=>`
     <tr><td>${r.cat}</td><td class="num">${fmtNum(r.count)}</td><td class="num">${pct(r.count,totalClosed)}</td><td class="num">${r.avgItems.toFixed(2)}</td></tr>
+  `).join('');
+}
+
+// ---- RL Deep Dive (independent date filter, driven by rlFilterFrom/rlFilterTo) ----
+function renderRLDeepDive(){
+  if(!document.getElementById('rlServiceBody')) return; // panel not present in this build
+
+  const inRl = r => r.date && r.date>=rlFilterFrom && r.date<=rlFilterTo;
+  const requests = ALL_SLOT_REQUESTS.filter(inRl);
+  const rlRecoveryKeys = buildRlRecoveryIndex();
+  const isRecovered = r => r.phone && r.date && rlRecoveryKeys.has(r.phone+'|'+r.date);
+
+  // Revenue at risk — only requests carrying a priced Total Value (FullDetail-sourced rows).
+  const valued = requests.filter(r=>typeof r.totalValue === 'number');
+  const totalValue = valued.reduce((s,r)=>s+r.totalValue, 0);
+  const recovered = valued.filter(isRecovered);
+  const recoveredValue = recovered.reduce((s,r)=>s+r.totalValue, 0);
+  const atRiskValue = totalValue - recoveredValue;
+  const recoveryPctByValue = totalValue ? recoveredValue/totalValue*100 : 0;
+  const recoveryPctByCount = valued.length ? recovered.length/valued.length*100 : 0;
+
+  document.getElementById('k-rl-total-value').textContent = fmtINR(totalValue);
+  document.getElementById('k-rl-total-count').textContent = `${fmtNum(valued.length)} priced lost requests`;
+  document.getElementById('k-rl-recovered-value').textContent = fmtINR(recoveredValue);
+  document.getElementById('k-rl-recovered-count').textContent = `${fmtNum(recovered.length)} recovered`;
+  document.getElementById('k-rl-atrisk-value').textContent = fmtINR(atRiskValue);
+  document.getElementById('k-rl-atrisk-count').textContent = `${fmtNum(valued.length-recovered.length)} unrecovered`;
+  document.getElementById('k-rl-recovery-pct').textContent = recoveryPctByValue.toFixed(1)+'%';
+  document.getElementById('k-rl-recovery-pct-count').textContent = `${recoveryPctByCount.toFixed(1)}% by count`;
+
+  // Lost demand by service — itemized from serviceItems (only present on priced rows).
+  const svcAgg = {}; // name -> {count, value}
+  requests.forEach(r=>{
+    (r.serviceItems||[]).forEach(it=>{
+      const a = svcAgg[it.name] = svcAgg[it.name] || {count:0, value:0};
+      a.count++; a.value += it.price;
+    });
+  });
+  const svcRows = Object.entries(svcAgg)
+    .map(([name,a])=>({name, count:a.count, value:a.value, avg:a.value/a.count}))
+    .sort((a,b)=>b.value-a.value);
+  document.getElementById('rlServiceBody').innerHTML = svcRows.map(r=>`
+    <tr><td>${r.name}</td><td class="num">${fmtNum(r.count)}</td><td class="num">${fmtINR(r.value)}</td><td class="num">${fmtINR(r.avg)}</td></tr>
+  `).join('');
+
+  // Lost demand by time slot — count + total request value (only valued requests).
+  const slotAgg = {}; // timeSlot -> {count, value}
+  valued.forEach(r=>{
+    const slot = r.timeSlot || 'Not selected';
+    const a = slotAgg[slot] = slotAgg[slot] || {count:0, value:0};
+    a.count++; a.value += r.totalValue;
+  });
+  const slotRows = Object.entries(slotAgg)
+    .map(([slot,a])=>({slot, count:a.count, value:a.value}))
+    .sort((a,b)=>b.value-a.value);
+  document.getElementById('rlTimeSlotBody').innerHTML = slotRows.map(r=>`
+    <tr><td>${r.slot}</td><td class="num">${fmtNum(r.count)}</td><td class="num">${fmtINR(r.value)}</td></tr>
   `).join('');
 }
 
@@ -1934,6 +2018,7 @@ function enableSortableTables(){
 
 highlightPreset("mtd");
 render();
+renderRLDeepDive();
 
 // ---- Rolling (chain) retention: each column measured against previous column's active set ----
 function renderRollingRetention(deliveredOrders){

@@ -2,21 +2,46 @@
 Merge a slot-requests CSV export into master-slot-requests.json.
 Usage: python3 merge_slot_requests.py <new_csv_path> <master_json_path>
 
+Expects the "FullDetail" export format (Customer, Phone, Interaction,
+Requested Zone, Time Slot, Services, Status, Scheduled Date/Timestamp,
+Created Date/Timestamp, RL, Services (Detailed w/ Price), Total Value (Rs),
+Hub / Branch, Address / Notes, Internal Notes, Updated Timestamp, Lead ID) —
+this superseded the older "Updated" format (which lacked value/hub/
+interaction/itemized-price data) as of Sept 2026.
+
 RL-dated: the 'date' field is the RL (Request Loss) column, not Requested/
 Scheduled/Created Date — rows with a blank RL are excluded (they haven't
 lost/converted yet, so there's nothing to record).
 
 Dedupe key: hash of (Phone, RL date, Requested Zone, Time Slot) — since
 the source export has no unique row ID. Re-running with an overlapping export
-upserts rather than duplicating.
+upserts rather than duplicating. Same key formula as the pre-FullDetail
+format, so old and new rows coexist in one master file; old rows just lack
+the newer fields (interaction/totalValue/hub/serviceItems/leadId).
 """
-import csv, json, hashlib, datetime, sys, os
+import csv, json, hashlib, datetime, sys, os, re
 
 def parse_date(s):
     return datetime.datetime.strptime(s.strip(), '%b %d %Y').date().isoformat()
 
 def row_key(phone, date_iso, zone, slot):
     return hashlib.md5(f"{phone}|{date_iso}|{zone}|{slot}".encode()).hexdigest()
+
+# "Threading (Eyebrows) - Rs49.00 | Half Legs Waxing (Rica Chocolate Tin) - Rs499.00"
+# -> [{"name": "Threading (Eyebrows)", "price": 49.0}, ...]
+ITEM_RE = re.compile(r'^(.*) - Rs([\d,]+\.\d\d)$')
+def parse_service_items(detail):
+    items = []
+    if not detail:
+        return items
+    for part in detail.split(' | '):
+        part = part.strip()
+        if not part:
+            continue
+        m = ITEM_RE.match(part)
+        if m:
+            items.append({'name': m.group(1).strip(), 'price': float(m.group(2).replace(',', ''))})
+    return items
 
 def main():
     csv_path = sys.argv[1]
@@ -40,6 +65,10 @@ def main():
             date_iso = parse_date(rl)
             key = row_key(r['Phone'], date_iso, r['Requested Zone'], r['Time Slot'])
             is_new = key not in by_key
+
+            total_value_raw = (r.get('Total Value (Rs)') or '').strip()
+            total_value = float(total_value_raw) if total_value_raw else None
+
             by_key[key] = {
                 'key': key,
                 'customer': r['Customer'],
@@ -49,6 +78,11 @@ def main():
                 'timeSlot': r['Time Slot'],
                 'services': r['Services'],
                 'status': r['Status'],
+                'interaction': r.get('Interaction') or None,
+                'totalValue': total_value,
+                'hub': r.get('Hub / Branch') or None,
+                'serviceItems': parse_service_items(r.get('Services (Detailed w/ Price)')),
+                'leadId': r.get('Lead ID') or None,
             }
             if is_new:
                 new_count += 1
