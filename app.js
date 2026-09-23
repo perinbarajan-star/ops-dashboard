@@ -835,56 +835,128 @@ function renderAttach(items, orders){
 }
 
 // ---- RL Deep Dive (independent date filter, driven by rlFilterFrom/rlFilterTo) ----
+// service name (as booked, no variant) -> category, built from live booking
+// history so it never drifts from the categories used elsewhere on this
+// dashboard (Waxing, Facial, Pedicure, Threading, ...).
+let _svcCategoryLookup = null;
+function buildServiceCategoryLookup(){
+  if(_svcCategoryLookup) return _svcCategoryLookup;
+  const votes = {}; // service -> {category: count}
+  ALL_ITEMS.forEach(li=>{
+    const v = votes[li.service] = votes[li.service] || {};
+    v[li.category] = (v[li.category]||0) + 1;
+  });
+  const lookup = {};
+  Object.entries(votes).forEach(([svc, cats])=>{
+    let best=null, bestN=-1;
+    Object.entries(cats).forEach(([c,n])=>{ if(n>bestN){ best=c; bestN=n; } });
+    lookup[svc] = best;
+  });
+  _svcCategoryLookup = lookup;
+  return lookup;
+}
+
+// RL service-item names look like "Full Arms + Underarms Waxing (Rica Chocolate
+// Tin)" or plain "Sea Soul Classic Pedicure" — strip a trailing "(...)" to get
+// the base service name, then look it up; keyword match covers the rare
+// (~0.3%) names booking history has never seen a variant of.
+function categorizeRlItem(name){
+  const lookup = buildServiceCategoryLookup();
+  let base = name;
+  if(name.includes('(') && name.endsWith(')')) base = name.slice(0, name.lastIndexOf('(')).trim();
+  if(lookup[base]) return lookup[base];
+  if(lookup[name]) return lookup[name];
+  const n = name.toLowerCase();
+  if(n.includes('waxing')) return 'Waxing';
+  if(n.includes('pedicure')) return 'Pedicure';
+  if(n.includes('facial')) return 'Facial';
+  if(n.includes('threading')) return 'Threading';
+  if(n.includes('massage')) return 'Massage';
+  if(n.includes('manicure') || n.includes('polish') || n.includes('cut, file')) return 'Manicure';
+  if(n.includes('detan')) return 'Detan';
+  if(n.includes('bleach')) return 'Bleach';
+  if(n.includes('scrub')) return 'Scrub';
+  if(n.includes('hair')) return 'Hair Colour';
+  if(n.includes('clean')) return 'Clean up';
+  return 'Other';
+}
+
+const RL_SLOT_BUCKETS = ['Evening (4 PM - 8 PM)', 'Afternoon (12 PM - 4 PM)', 'Morning (8 AM - 12 PM)'];
+// A named slot maps directly; anything else ("Any time", "Not selected", or a
+// one-off exact time like "3:00 PM") falls back to the hour the request was
+// actually created, since that's the best signal we have for when they wanted it.
+function rlSlotBucket(r){
+  const slot = r.timeSlot || '';
+  if(slot.startsWith('Evening')) return RL_SLOT_BUCKETS[0];
+  if(slot.startsWith('Afternoon')) return RL_SLOT_BUCKETS[1];
+  if(slot.startsWith('Morning')) return RL_SLOT_BUCKETS[2];
+  if(typeof r.createdHour === 'number'){
+    if(r.createdHour >= 16) return RL_SLOT_BUCKETS[0];
+    if(r.createdHour >= 12) return RL_SLOT_BUCKETS[1];
+    return RL_SLOT_BUCKETS[2];
+  }
+  return null; // no timestamp to fall back on (pre-FullDetail rows) — excluded from bucketed tables
+}
+
 function renderRLDeepDive(){
   if(!document.getElementById('rlServiceBody')) return; // panel not present in this build
 
   const inRl = r => r.date && r.date>=rlFilterFrom && r.date<=rlFilterTo;
   const requests = ALL_SLOT_REQUESTS.filter(inRl);
   const rlRecoveryKeys = buildRlRecoveryIndex();
-  const isRecovered = r => r.phone && r.date && rlRecoveryKeys.has(r.phone+'|'+r.date);
 
-  // Revenue at risk — only requests carrying a priced Total Value (FullDetail-sourced rows).
-  const valued = requests.filter(r=>typeof r.totalValue === 'number');
-  const totalValue = valued.reduce((s,r)=>s+r.totalValue, 0);
-  const recovered = valued.filter(isRecovered);
-  const recoveredValue = recovered.reduce((s,r)=>s+r.totalValue, 0);
-  const atRiskValue = totalValue - recoveredValue;
-  const recoveryPctByValue = totalValue ? recoveredValue/totalValue*100 : 0;
-  const recoveryPctByCount = valued.length ? recovered.length/valued.length*100 : 0;
+  // ---- Headline: RL / Recovered, both absolute and as a % of bookings in the same window ----
+  const rlPhones = new Set(requests.map(r=>r.phone).filter(Boolean));
+  const recoveredPhones = new Set();
+  requests.forEach(r=>{ if(r.phone && r.date && rlRecoveryKeys.has(r.phone+'|'+r.date)) recoveredPhones.add(r.phone); });
+  const rlCount = rlPhones.size;
+  const recoveredCount = recoveredPhones.size;
 
-  document.getElementById('k-rl-total-value').textContent = fmtINR(totalValue);
-  document.getElementById('k-rl-total-count').textContent = `${fmtNum(valued.length)} priced lost requests`;
-  document.getElementById('k-rl-recovered-value').textContent = fmtINR(recoveredValue);
-  document.getElementById('k-rl-recovered-count').textContent = `${fmtNum(recovered.length)} recovered`;
-  document.getElementById('k-rl-atrisk-value').textContent = fmtINR(atRiskValue);
-  document.getElementById('k-rl-atrisk-count').textContent = `${fmtNum(valued.length-recovered.length)} unrecovered`;
-  document.getElementById('k-rl-recovery-pct').textContent = recoveryPctByValue.toFixed(1)+'%';
-  document.getElementById('k-rl-recovery-pct-count').textContent = `${recoveryPctByCount.toFixed(1)}% by count`;
+  const bookings = ALL_ORDERS.filter(o=>o.scheduled && o.scheduled>=rlFilterFrom && o.scheduled<=rlFilterTo && !o.bookingFailed).length;
+  const rlPct = bookings ? rlCount/bookings*100 : 0;
+  const recoveredPct = bookings ? recoveredCount/bookings*100 : 0;
 
-  // Lost demand by service — itemized from serviceItems (only present on priced rows).
-  const svcAgg = {}; // name -> {count, value}
+  document.getElementById('k-rl-count').textContent = fmtNum(rlCount);
+  document.getElementById('k-rl-count-foot').textContent = 'unique phones lost';
+  document.getElementById('k-rl-pct').textContent = rlPct.toFixed(1)+'%';
+  document.getElementById('k-rl-pct-foot').textContent = `of ${fmtNum(bookings)} bookings`;
+  document.getElementById('k-rl-recovered-count').textContent = fmtNum(recoveredCount);
+  document.getElementById('k-rl-recovered-count-foot').textContent = 'unique phones recovered';
+  document.getElementById('k-rl-recovered-pct').textContent = recoveredPct.toFixed(1)+'%';
+  document.getElementById('k-rl-recovered-pct-foot').textContent = `of ${fmtNum(bookings)} bookings`;
+
+  // ---- Lost demand by service, grouped to category, with a slot-of-day breakdown ----
+  const catAgg = {}; // category -> {count, Evening, Afternoon, Morning}
   requests.forEach(r=>{
+    const bucket = rlSlotBucket(r);
     (r.serviceItems||[]).forEach(it=>{
-      const a = svcAgg[it.name] = svcAgg[it.name] || {count:0, value:0};
-      a.count++; a.value += it.price;
+      const cat = categorizeRlItem(it.name);
+      const a = catAgg[cat] = catAgg[cat] || {count:0, Evening:0, Afternoon:0, Morning:0};
+      a.count++;
+      if(bucket==='Evening (4 PM - 8 PM)') a.Evening++;
+      else if(bucket==='Afternoon (12 PM - 4 PM)') a.Afternoon++;
+      else if(bucket==='Morning (8 AM - 12 PM)') a.Morning++;
     });
   });
-  const svcRows = Object.entries(svcAgg)
-    .map(([name,a])=>({name, count:a.count, value:a.value, avg:a.value/a.count}))
-    .sort((a,b)=>b.value-a.value);
-  document.getElementById('rlServiceBody').innerHTML = svcRows.map(r=>`
-    <tr><td>${r.name}</td><td class="num">${fmtNum(r.count)}</td><td class="num">${fmtINR(r.value)}</td><td class="num">${fmtINR(r.avg)}</td></tr>
+  const catRows = Object.entries(catAgg)
+    .map(([cat,a])=>({cat, ...a}))
+    .sort((a,b)=>b.count-a.count);
+  document.getElementById('rlServiceBody').innerHTML = catRows.map(r=>`
+    <tr><td>${r.cat}</td><td class="num">${fmtNum(r.count)}</td><td class="num">${fmtNum(r.Evening)}</td><td class="num">${fmtNum(r.Afternoon)}</td><td class="num">${fmtNum(r.Morning)}</td></tr>
   `).join('');
 
-  // Lost demand by time slot — count + total request value (only valued requests).
-  const slotAgg = {}; // timeSlot -> {count, value}
+  // ---- Lost demand by time slot, grouped into the same 3 buckets ----
+  const valued = requests.filter(r=>typeof r.totalValue === 'number');
+  const slotAgg = {};
   valued.forEach(r=>{
-    const slot = r.timeSlot || 'Not selected';
-    const a = slotAgg[slot] = slotAgg[slot] || {count:0, value:0};
+    const bucket = rlSlotBucket(r);
+    if(!bucket) return;
+    const a = slotAgg[bucket] = slotAgg[bucket] || {count:0, value:0};
     a.count++; a.value += r.totalValue;
   });
-  const slotRows = Object.entries(slotAgg)
-    .map(([slot,a])=>({slot, count:a.count, value:a.value}))
+  const slotRows = RL_SLOT_BUCKETS
+    .filter(b=>slotAgg[b])
+    .map(b=>({slot:b, ...slotAgg[b]}))
     .sort((a,b)=>b.value-a.value);
   document.getElementById('rlTimeSlotBody').innerHTML = slotRows.map(r=>`
     <tr><td>${r.slot}</td><td class="num">${fmtNum(r.count)}</td><td class="num">${fmtINR(r.value)}</td></tr>

@@ -69,6 +69,14 @@ def main():
             total_value_raw = (r.get('Total Value (Rs)') or '').strip()
             total_value = float(total_value_raw) if total_value_raw else None
 
+            created_ts_raw = (r.get('Created Timestamp') or '').strip()
+            created_hour = None
+            if created_ts_raw:
+                try:
+                    created_hour = datetime.datetime.strptime(created_ts_raw, '%b %d %Y %I:%M %p').hour
+                except ValueError:
+                    pass
+
             by_key[key] = {
                 'key': key,
                 'customer': r['Customer'],
@@ -83,6 +91,7 @@ def main():
                 'hub': r.get('Hub / Branch') or None,
                 'serviceItems': parse_service_items(r.get('Services (Detailed w/ Price)')),
                 'leadId': r.get('Lead ID') or None,
+                'createdHour': created_hour,
             }
             if is_new:
                 new_count += 1
