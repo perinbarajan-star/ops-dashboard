@@ -941,9 +941,14 @@ function renderRLDeepDive(){
   const catRows = Object.entries(catAgg)
     .map(([cat,a])=>({cat, ...a}))
     .sort((a,b)=>b.count-a.count);
+  const catTotal = catRows.reduce((s,r)=>({
+    count: s.count+r.count, Evening: s.Evening+r.Evening, Afternoon: s.Afternoon+r.Afternoon, Morning: s.Morning+r.Morning
+  }), {count:0, Evening:0, Afternoon:0, Morning:0});
   document.getElementById('rlServiceBody').innerHTML = catRows.map(r=>`
     <tr><td>${r.cat}</td><td class="num">${fmtNum(r.count)}</td><td class="num">${fmtNum(r.Evening)}</td><td class="num">${fmtNum(r.Afternoon)}</td><td class="num">${fmtNum(r.Morning)}</td></tr>
-  `).join('');
+  `).join('') + `
+    <tr style="font-weight:700; border-top:2px solid var(--ink);"><td>Total</td><td class="num">${fmtNum(catTotal.count)}</td><td class="num">${fmtNum(catTotal.Evening)}</td><td class="num">${fmtNum(catTotal.Afternoon)}</td><td class="num">${fmtNum(catTotal.Morning)}</td></tr>
+  `;
 
   // ---- Lost demand by time slot, grouped into the same 3 buckets ----
   const valued = requests.filter(r=>typeof r.totalValue === 'number');
@@ -958,9 +963,12 @@ function renderRLDeepDive(){
     .filter(b=>slotAgg[b])
     .map(b=>({slot:b, ...slotAgg[b]}))
     .sort((a,b)=>b.value-a.value);
+  const slotTotal = slotRows.reduce((s,r)=>({count:s.count+r.count, value:s.value+r.value}), {count:0, value:0});
   document.getElementById('rlTimeSlotBody').innerHTML = slotRows.map(r=>`
     <tr><td>${r.slot}</td><td class="num">${fmtNum(r.count)}</td><td class="num">${fmtINR(r.value)}</td></tr>
-  `).join('');
+  `).join('') + `
+    <tr style="font-weight:700; border-top:2px solid var(--ink);"><td>Total</td><td class="num">${fmtNum(slotTotal.count)}</td><td class="num">${fmtINR(slotTotal.value)}</td></tr>
+  `;
 }
 
 function addDays(dateStr, n){
