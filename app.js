@@ -824,11 +824,29 @@ function shiftMonthRange(start, end, n){
   return [isoLocal(newS), isoLocal(newE)];
 }
 
+// Sparkline SVG for a chronological series of numeric points, colored by
+// whether the latest point is a good or bad move (matches the metric's
+// goodWhenUp sense), with the last point marked by a filled dot.
+function sparklineSvg(values, isGood){
+  const w = 260, h = 36, pad = 4;
+  const lo = Math.min(...values), hi = Math.max(...values);
+  const range = (hi - lo) || 1;
+  const n = values.length;
+  const pts = values.map((v,i)=>{
+    const x = pad + i*(w-2*pad)/(n-1 || 1);
+    const y = pad + (h-2*pad)*(1 - (v-lo)/range);
+    return [x,y];
+  });
+  const path = 'M ' + pts.map(p=>`${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(' L ');
+  const color = isGood ? 'var(--green)' : 'var(--red)';
+  const last = pts[pts.length-1];
+  return `<svg class="dc-spark" viewBox="0 0 ${w} ${h}"><path d="${path}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="3.5" fill="${color}"/></svg>`;
+}
+
 function renderDayCompare(){
   const section = document.getElementById('dayCompareSection');
   const titleEl = document.getElementById('dayCompareTitle');
   const noteEl = document.getElementById('dayCompareNote');
-  const headerRow = document.getElementById('dayCompareHeaderRow');
   const preset = activePresetKey;
 
   if(preset==='alltime'){
@@ -893,13 +911,6 @@ function renderDayCompare(){
     else noteEl.textContent = `${todayWin[0]} to ${todayWin[1]} (${daysBetween(todayWin[0],todayWin[1])+1} days). Each comparison period is the same length, further back.`;
   }
 
-  // Rebuild the header row to match however many comparison columns this preset uses
-  if(headerRow){
-    let h = '<th>Metric</th><th class="num">Today</th>';
-    if(showL4W) h += `<th class="num">L${compWins.length}W Average</th>`;
-    compWins.forEach(w=> h += `<th class="num">${w.label}</th>`);
-    headerRow.innerHTML = h;
-  }
 
   const rlRecoveryKeys = buildRlRecoveryIndex();
 
@@ -954,27 +965,38 @@ function renderDayCompare(){
     { key:'created', label:'Created Orders', fmt:v=>fmtNum(v), goodWhenUp:true },
   ];
 
-  const growthSpan = (todayVal, compVal, goodWhenUp)=>{
-    if(!compVal) return '';
-    const p = (todayVal-compVal)/compVal*100;
-    if(!isFinite(p)) return '';
-    const isGood = goodWhenUp ? (p>=0) : (p<=0);
-    const color = isGood ? 'var(--green)' : 'var(--red)';
-    return ` <span style="color:${color}; font-weight:700; font-size:11px;">(${p>=0?'+':''}${p.toFixed(1)}%)</span>`;
-  };
-
-  const rows = METRICS.map(m=>{
+  const cards = METRICS.map(m=>{
     const todayVal = todayData[m.key];
     const compVals = compData.map(cd=>cd[m.key]);
     const l4w = compVals.length ? compVals.reduce((a,b)=>a+b,0)/compVals.length : 0;
-    let cells = `<td>${m.label}</td><td class="num">${m.fmt(todayVal)}</td>`;
-    if(showL4W) cells += `<td class="num">${m.fmt(l4w)}</td>`;
-    compVals.forEach(cv=>{ cells += `<td class="num">${m.fmt(cv)}${growthSpan(todayVal,cv,m.goodWhenUp)}</td>`; });
-    return `<tr>${cells}</tr>`;
+
+    // Badge compares Today against L4W average when available, else the
+    // single comparison window this preset has (e.g. D-7 for "Tomorrow").
+    const badgeVal = showL4W ? l4w : compVals[0];
+    const badgeLabel = showL4W ? `L${compWins.length}W avg` : compWins[0].label;
+    const pct = badgeVal ? (todayVal-badgeVal)/badgeVal*100 : 0;
+    const isGood = m.goodWhenUp ? (pct>=0) : (pct<=0);
+    const badgeCls = isGood ? 'good' : 'bad';
+    const sign = pct>=0 ? '+' : '';
+
+    // Sparkline: oldest comparison window -> ... -> L4W avg (if shown) -> Today.
+    const sparkVals = [...compVals].reverse();
+    if(showL4W) sparkVals.push(l4w);
+    sparkVals.push(todayVal);
+    const sparkLabels = [...compWins.map(w=>w.label)].reverse();
+    if(showL4W) sparkLabels.push('L4W');
+    sparkLabels.push('Today');
+
+    return `<div class="dc-card">
+      <div class="dc-label">${m.label}</div>
+      <div class="dc-row"><div class="dc-value">${m.fmt(todayVal)}</div><div class="dc-badge ${badgeCls}">${sign}${pct.toFixed(1)}% vs ${badgeLabel}</div></div>
+      ${sparklineSvg(sparkVals, isGood)}
+      <div class="dc-spark-labels">${sparkLabels.map(l=>`<span>${l}</span>`).join('')}</div>
+    </div>`;
   });
 
-  const body = document.getElementById('dayCompareBody');
-  if(body) body.innerHTML = rows.join('');
+  const cardsEl = document.getElementById('dayCompareCards');
+  if(cardsEl) cardsEl.innerHTML = cards.join('');
 }
 
 let paceDayOffset = 0; // 0=Today, 1=Tomorrow, 2=Day After Tomorrow
