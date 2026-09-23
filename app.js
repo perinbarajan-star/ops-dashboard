@@ -226,7 +226,6 @@ function render(){
   renderOverview(orders, bookingFailedOrders, inRangeOrders, slotRequests);
   renderWoWMoM();
   renderDayCompare();
-  renderCreatedPace();
   renderBeauticians(orders);
   renderAttach(items, orders);
   renderCustomers();

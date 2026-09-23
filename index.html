@@ -224,19 +224,6 @@
       </div>
     </div>
 
-    <div class="eyebrow" style="margin-top:26px;">Created Jobs Pace</div>
-    <div class="level-toggle" id="pacedayToggle" style="margin-top:10px;"></div>
-    <div class="kpi-grid" style="grid-template-columns:repeat(3,1fr); margin-top:10px;">
-      <div class="kpi accent"><div class="label">Locked In (as of now)</div><div class="value" id="k-pace-today">—</div><div class="foot" id="k-pace-today-foot">—</div></div>
-      <div class="kpi"><div class="label">Same Point, D-7</div><div class="value" id="k-pace-lastweek">—</div><div class="foot">same weekday, same cutoff time</div></div>
-      <div class="kpi"><div class="label">Avg (D-7 to D-56)</div><div class="value" id="k-pace-avg">—</div><div class="foot" id="k-pace-avg-foot">—</div></div>
-    </div>
-    <div class="grid-2" style="grid-template-columns:1fr; margin-top:16px;">
-      <div class="panel">
-        <canvas id="chartCreatedPace" style="max-height:280px;"></canvas>
-      </div>
-    </div>
-
     <div class="eyebrow" style="margin-top:26px;">Growth — Rolling Trends</div>
     <div class="foot-note" style="margin:-4px 0 14px;">Basis: Closed (delivered) jobs only, all-time, anchored to today — not affected by the date filter above. Bars = order count, line = growth % vs. prior period.</div>
     <div class="grid-2">
@@ -799,7 +786,6 @@ function render(){
   renderOverview(orders, bookingFailedOrders, inRangeOrders, slotRequests);
   renderWoWMoM();
   renderDayCompare();
-  renderCreatedPace();
   renderBeauticians(orders);
   renderAttach(items, orders);
   renderCustomers();
