@@ -898,11 +898,29 @@ function rlSlotBucket(r){
   return null; // no timestamp to fall back on (pre-FullDetail rows) — excluded from bucketed tables
 }
 
+// One customer can generate more than one slot-request row on the same RL date (e.g. they
+// clicked around before actually requesting, or requested more than one zone/slot). For
+// counting purposes that's one lost customer for that day, not several: collapse each
+// (phone, date) group to a single representative row, preferring an actual REQUESTED (or
+// legacy pre-interaction-tracking) row over a CLICKED-only one.
+function dedupeRlRequestsPerDay(requests){
+  const byKey = new Map();
+  const noKey = [];
+  requests.forEach(r=>{
+    if(!r.phone || !r.date){ noKey.push(r); return; }
+    const key = r.phone+'|'+r.date;
+    const existing = byKey.get(key);
+    if(!existing){ byKey.set(key, r); return; }
+    if(existing.interaction==='CLICKED' && r.interaction!=='CLICKED') byKey.set(key, r);
+  });
+  return [...byKey.values(), ...noKey];
+}
+
 function renderRLDeepDive(){
   if(!document.getElementById('rlServiceBody')) return; // panel not present in this build
 
   const inRl = r => r.date && r.date>=rlFilterFrom && r.date<=rlFilterTo;
-  const requests = ALL_SLOT_REQUESTS.filter(inRl);
+  const requests = dedupeRlRequestsPerDay(ALL_SLOT_REQUESTS.filter(inRl));
   const rlRecoveryKeys = buildRlRecoveryIndex();
 
   // ---- Headline: RL / Recovered, both absolute and as a % of bookings in the same window ----
