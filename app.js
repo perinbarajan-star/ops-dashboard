@@ -916,6 +916,69 @@ function dedupeRlRequestsPerDay(requests){
   return [...byKey.values(), ...noKey];
 }
 
+// ---- Loss attribution: was a lost request likely supply-side (no capacity) or demand-side? ----
+// For each lost request, look at every beautician who has served that zone at all in the
+// trailing 30 days (the zone's "active pool"), then check how many of them already had a
+// job scheduled in that same date + time-slot window. High utilization -> we simply didn't
+// have the hands (Supply Deficiency). Low utilization -> capacity existed, so the loss is
+// more likely demand-side (price, timing mismatch, no follow-up, etc).
+let _zoneOrderIndex = null;
+function buildZoneOrderIndex(){
+  if(_zoneOrderIndex) return _zoneOrderIndex;
+  const idx = {}; // zone -> [{date, hour, provider}]
+  ALL_ORDERS.forEach(o=>{
+    if(!o.provider || !o.lat || !o.lng || !o.scheduled) return;
+    if(o.spModel==='Test Orders' || o.spModel==='Churned / Unmapped') return;
+    const zone = findHubZone(o.lat, o.lng);
+    if(!zone) return;
+    let hour = null;
+    if(o.scheduledDT){
+      const d = new Date(o.scheduledDT);
+      if(!isNaN(d)) hour = d.getHours();
+    }
+    (idx[zone] = idx[zone] || []).push({date:o.scheduled, hour, provider:o.provider});
+  });
+  _zoneOrderIndex = idx;
+  return idx;
+}
+const ATTR_BUCKET_HOURS = {
+  'Evening (4 PM - 8 PM)': [16,20],
+  'Afternoon (12 PM - 4 PM)': [12,16],
+  'Morning (8 AM - 12 PM)': [8,12],
+};
+const ATTR_VERDICT_DESC = {
+  'Supply Deficiency': '80%+ of the zone’s active beauticians were already booked in this exact date + time-slot window — we simply didn’t have the hands.',
+  'No Coverage': 'Zero beauticians recorded serving this zone in the 30 days before the request — there was no assigned capacity here at all.',
+  'Inconclusive': '60–80% of the zone’s beauticians were busy — a real but borderline signal, not conclusively a supply gap.',
+  'Not Supply Deficiency': '60% or fewer of the zone’s beauticians were busy — spare capacity existed, so the loss is more likely demand-side (price, timing, no follow-up).',
+  'Unknown': 'Request is missing a zone, date, or a resolvable time slot, so utilization can’t be computed.',
+};
+function attributeLossReason(r){
+  const bucket = rlSlotBucket(r);
+  if(!r.zone || !r.date || !bucket){
+    return {verdict:'Unknown', pool:0, busy:0, pct:null, reason:ATTR_VERDICT_DESC['Unknown']};
+  }
+  const zoneOrders = buildZoneOrderIndex()[r.zone] || [];
+  const winStart = isoLocal(new Date(new Date(r.date+'T00:00:00').getTime() - 29*86400000));
+  const pool = new Set();
+  zoneOrders.forEach(o=>{ if(o.date>=winStart && o.date<=r.date) pool.add(o.provider); });
+  if(pool.size===0){
+    return {verdict:'No Coverage', pool:0, busy:0, pct:null,
+      reason:`No beauticians recorded serving ${r.zone} in the 30 days before ${r.date}, so the request had no capacity to draw on.`};
+  }
+  const [hStart, hEnd] = ATTR_BUCKET_HOURS[bucket];
+  const busy = new Set();
+  zoneOrders.forEach(o=>{
+    if(o.date===r.date && o.hour!=null && o.hour>=hStart && o.hour<hEnd && pool.has(o.provider)) busy.add(o.provider);
+  });
+  const pct = busy.size/pool.size*100;
+  let verdict = 'Inconclusive';
+  if(pct>=80) verdict='Supply Deficiency';
+  else if(pct<=60) verdict='Not Supply Deficiency';
+  const reason = `${busy.size} of ${pool.size} beauticians active in ${r.zone} (${pct.toFixed(0)}%) were already booked during ${bucket} on ${r.date}.`;
+  return {verdict, pool:pool.size, busy:busy.size, pct, reason};
+}
+
 function renderRLDeepDive(){
   if(!document.getElementById('rlServiceBody')) return; // panel not present in this build
 
@@ -987,6 +1050,37 @@ function renderRLDeepDive(){
   `).join('') + `
     <tr style="font-weight:700; border-top:2px solid var(--ink);"><td>Total</td><td class="num">${fmtNum(slotTotal.count)}</td><td class="num">${fmtINR(slotTotal.value)}</td></tr>
   `;
+
+  // ---- Loss attribution: supply deficiency vs. demand-side, plus the concrete evidence for it ----
+  const attrAgg = {}; // verdict -> {count, pctSum, pctN}
+  const supplyDeficientExamples = [];
+  requests.forEach(r=>{
+    const a = attributeLossReason(r);
+    const g = attrAgg[a.verdict] = attrAgg[a.verdict] || {count:0, pctSum:0, pctN:0};
+    g.count++;
+    if(a.pct!=null){ g.pctSum += a.pct; g.pctN++; }
+    if(a.verdict==='Supply Deficiency'){
+      supplyDeficientExamples.push({zone:r.zone, date:r.date, slot:rlSlotBucket(r), busy:a.busy, pool:a.pool, pct:a.pct, reason:a.reason});
+    }
+  });
+  const attrTotal = requests.length;
+  const ATTR_VERDICT_ORDER = ['Supply Deficiency', 'No Coverage', 'Inconclusive', 'Not Supply Deficiency', 'Unknown'];
+  document.getElementById('rlAttributionBody').innerHTML = ATTR_VERDICT_ORDER.filter(v=>attrAgg[v]).map(v=>{
+    const g = attrAgg[v];
+    const avgUtil = g.pctN ? Math.round(g.pctSum/g.pctN)+'%' : '—';
+    const pctOfRl = attrTotal ? (g.count/attrTotal*100).toFixed(1)+'%' : '0.0%';
+    return `<tr>
+      <td>${v}<div class="foot-note" style="margin:2px 0 0;">${ATTR_VERDICT_DESC[v]}</div></td>
+      <td class="num">${fmtNum(g.count)}</td>
+      <td class="num">${pctOfRl}</td>
+      <td class="num">${avgUtil}</td>
+    </tr>`;
+  }).join('');
+
+  const topExamples = supplyDeficientExamples.sort((a,b)=>b.pct-a.pct || b.busy-a.busy).slice(0,10);
+  document.getElementById('rlAttributionExamplesBody').innerHTML = topExamples.length ? topExamples.map(e=>`
+    <tr><td>${e.zone}</td><td>${e.date}</td><td>${e.slot}</td><td class="num">${e.busy}/${e.pool} (${e.pct.toFixed(0)}%)</td><td>${e.reason}</td></tr>
+  `).join('') : '<tr><td colspan="5" style="color:var(--muted);">No supply-deficiency instances in this range.</td></tr>';
 }
 
 function addDays(dateStr, n){
