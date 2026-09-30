@@ -2330,7 +2330,7 @@ function renderHubLevel(orders, bookingFailedOrders, slotRequests){
       const bucketCells = AOV_BUCKETS.map((b,i)=>{
         const count = r.aovBuckets[i];
         const sharePct = r.closed ? count/r.closed*100 : 0;
-        return `<td class="num">${fmtNum(count)}<div class="foot-note" style="margin:1px 0 0;">${sharePct.toFixed(1)}%</div></td>`;
+        return `<td class="num">${sharePct.toFixed(1)}%<div class="foot-note" style="margin:1px 0 0;">${fmtNum(count)}</div></td>`;
       }).join('');
       return `<tr><td>${r.name}</td><td class="num">${fmtINR(r.aovPost)}</td><td class="num">${fmtNum(r.closed)}</td>${bucketCells}</tr>`;
     }).join('') || `<tr><td colspan="${3+AOV_BUCKETS.length}" style="color:var(--muted);">No closed orders in range</td></tr>`;
