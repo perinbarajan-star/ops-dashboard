@@ -689,9 +689,7 @@ const AOV_BUCKETS = [
   ['800-999', 800, 1000],
   ['1000-1499', 1000, 1500],
   ['1500-1999', 1500, 2000],
-  ['2000-2499', 2000, 2500],
-  ['2500-2999', 2500, 3000],
-  ['3000+', 3000, Infinity],
+  ['2000+', 2000, Infinity],
 ];
 function aovBucketMatch(bill, lo, hi){
   return hi===Infinity ? bill>=lo : (bill>=lo && bill<hi);

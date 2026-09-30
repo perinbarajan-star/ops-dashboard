@@ -604,7 +604,7 @@
     <div class="foot-note" style="margin:-4px 0 14px;">Closed jobs only, current date filter above. Sorted by Closed AOV descending (click any column header to re-sort). Each cell shows the order count with that bucket's share of the zone's Closed jobs beneath it.</div>
     <div class="panel" style="max-height:460px; overflow:auto;">
       <table>
-        <thead><tr><th>Zone</th><th class="num">Closed AOV</th><th class="num">Closed</th><th class="num">&lt;500</th><th class="num">500-800</th><th class="num">800-999</th><th class="num">1000-1499</th><th class="num">1500-1999</th><th class="num">2000-2499</th><th class="num">2500-2999</th><th class="num">3000+</th></tr></thead>
+        <thead><tr><th>Zone</th><th class="num">Closed AOV</th><th class="num">Closed</th><th class="num">&lt;500</th><th class="num">500-800</th><th class="num">800-999</th><th class="num">1000-1499</th><th class="num">1500-1999</th><th class="num">2000+</th></tr></thead>
         <tbody id="hubAovBucketBody"></tbody>
       </table>
     </div>
@@ -1317,9 +1317,7 @@ const AOV_BUCKETS = [
   ['800-999', 800, 1000],
   ['1000-1499', 1000, 1500],
   ['1500-1999', 1500, 2000],
-  ['2000-2499', 2000, 2500],
-  ['2500-2999', 2500, 3000],
-  ['3000+', 3000, Infinity],
+  ['2000+', 2000, Infinity],
 ];
 function aovBucketMatch(bill, lo, hi){
   return hi===Infinity ? bill>=lo : (bill>=lo && bill<hi);
