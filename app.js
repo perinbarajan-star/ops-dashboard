@@ -680,6 +680,27 @@ function renderQualityWoWChart(filterModel){
 
 
 // ================= OVERVIEW =================
+// Half-open ranges [lo, hi) so a bill like 999.46 or 1999.76 always lands in exactly one
+// bucket — inclusive integer cutoffs (500-999 / 1000-1499) silently dropped fractional
+// bills sitting right on the boundary.
+const AOV_BUCKETS = [
+  ['<500', 0, 500],
+  ['500-800', 500, 800],
+  ['800-999', 800, 1000],
+  ['1000-1499', 1000, 1500],
+  ['1500-1999', 1500, 2000],
+  ['2000-2499', 2000, 2500],
+  ['2500-2999', 2500, 3000],
+  ['3000+', 3000, Infinity],
+];
+function aovBucketMatch(bill, lo, hi){
+  return hi===Infinity ? bill>=lo : (bill>=lo && bill<hi);
+}
+function aovBucketLabel(bill){
+  const b = AOV_BUCKETS.find(([,lo,hi])=>aovBucketMatch(bill,lo,hi));
+  return b ? b[0] : AOV_BUCKETS[AOV_BUCKETS.length-1][0];
+}
+
 function renderOverview(orders, bookingFailedOrders, inRangeOrders, slotRequests){
   const total = orders.length;
   const closed = orders.filter(o=>o.status==='Closed');
@@ -696,18 +717,9 @@ function renderOverview(orders, bookingFailedOrders, inRangeOrders, slotRequests
   `).join('') || '<tr><td colspan="3" style="color:var(--muted);">Everything in range is Closed</td></tr>';
 
   // ---- AOV Bucket Distribution (Closed jobs, post-discount bill value) ----
-  const AOV_BUCKETS = [
-    ['<500', 0, 499],
-    ['500-999', 500, 999],
-    ['1000-1499', 1000, 1499],
-    ['1500-1999', 1500, 1999],
-    ['2000-2499', 2000, 2499],
-    ['2500-2999', 2500, 2999],
-    ['3000+', 3000, Infinity],
-  ];
   const totalClosedForBuckets = closed.length;
   document.getElementById('aovBucketBody').innerHTML = AOV_BUCKETS.map(([label,lo,hi])=>{
-    const inBucket = closed.filter(o=>o.bill>=lo && o.bill<=hi);
+    const inBucket = closed.filter(o=>aovBucketMatch(o.bill,lo,hi));
     const count = inBucket.length;
     const ricaCount = inBucket.filter(o=>(o.promoUplift||0)>0).length;
     const ricaShare = count ? ricaCount/count*100 : 0;
@@ -1584,7 +1596,7 @@ function renderHubLevel(orders, bookingFailedOrders, slotRequests){
   });
 
   const byZone = {};
-  HUB_ZONES.forEach(z=>{ byZone[z.name] = {scheduled:0, closed:0, cancelled:0, gmv:0, gmvNet:0, discPromo:0, discPromoNet:0, custCounts:{}, bfNoSuccess:0, requestLossPhones:new Set(), recoveredPhones:new Set(), dsClosed:0, dsProviders:new Set(), nonDsClosed:0, nonDsProviders:new Set()}; });
+  HUB_ZONES.forEach(z=>{ byZone[z.name] = {scheduled:0, closed:0, cancelled:0, gmv:0, gmvNet:0, discPromo:0, discPromoNet:0, custCounts:{}, bfNoSuccess:0, requestLossPhones:new Set(), recoveredPhones:new Set(), dsClosed:0, dsProviders:new Set(), nonDsClosed:0, nonDsProviders:new Set(), aovBuckets:new Array(AOV_BUCKETS.length).fill(0)}; });
   let unmatched = 0;
   orders.forEach(o=>{
     if(!o.lat || !o.lng) return;
@@ -1602,6 +1614,8 @@ function renderHubLevel(orders, bookingFailedOrders, slotRequests){
         if(o.spModel==='Dark Store'){ z.dsClosed++; z.dsProviders.add(o.provider); }
         else { z.nonDsClosed++; z.nonDsProviders.add(o.provider); }
       }
+      const bucketIdx = AOV_BUCKETS.findIndex(([,lo,hi])=>aovBucketMatch(o.bill,lo,hi));
+      if(bucketIdx>=0) z.aovBuckets[bucketIdx]++;
     }
     if(o.status==='Cancelled') z.cancelled++;
   });
@@ -1646,7 +1660,7 @@ function renderHubLevel(orders, bookingFailedOrders, slotRequests){
     const nonDsCount = zoneTag ? zoneTag.nonDs : null;
     const dsUtil = (dsCount!=null && dsCount>0) ? v.dsClosed/dsCount : null;
     const nonDsUtil = (nonDsCount!=null && nonDsCount>0) ? v.nonDsClosed/nonDsCount : null;
-    return { name:z.name, polygon:z.polygon, scheduled:v.scheduled, closed:v.closed, cancelled:v.cancelled, cancelPct, gmvPost:gmvPostNet, aovPost, repeatRate, bfNoSuccess:v.bfNoSuccess, requestLoss:v.requestLossPhones.size, requestLossPct: v.scheduled ? v.requestLossPhones.size/v.scheduled*100 : 0, rlRecovered:v.recoveredPhones.size, rlRecoveredPct: v.requestLossPhones.size ? v.recoveredPhones.size/v.requestLossPhones.size*100 : 0, primaryTagged, util, dsCount, dsShare, dsUtil, nonDsCount, nonDsShare, nonDsUtil };
+    return { name:z.name, polygon:z.polygon, scheduled:v.scheduled, closed:v.closed, cancelled:v.cancelled, cancelPct, gmvPost:gmvPostNet, aovPost, repeatRate, bfNoSuccess:v.bfNoSuccess, requestLoss:v.requestLossPhones.size, requestLossPct: v.scheduled ? v.requestLossPhones.size/v.scheduled*100 : 0, rlRecovered:v.recoveredPhones.size, rlRecoveredPct: v.requestLossPhones.size ? v.recoveredPhones.size/v.requestLossPhones.size*100 : 0, primaryTagged, util, dsCount, dsShare, dsUtil, nonDsCount, nonDsShare, nonDsUtil, aovBuckets:v.aovBuckets };
   });
 
   const asOfEl = document.getElementById('primaryTaggedAsOf');
@@ -1679,6 +1693,20 @@ function renderHubLevel(orders, bookingFailedOrders, slotRequests){
       <td class="num">${fmtINR(r.aovPost)}</td>
     </tr>
   `).join('');
+
+  // ---- AOV Bucket by Zone (Closed jobs, raw bill value — same buckets as the Ops tab) ----
+  const aovByZoneEl = document.getElementById('hubAovBucketBody');
+  if(aovByZoneEl){
+    const aovSortedRows = rows.slice().sort((a,b)=>b.aovPost-a.aovPost);
+    aovByZoneEl.innerHTML = aovSortedRows.map(r=>{
+      const bucketCells = AOV_BUCKETS.map((b,i)=>{
+        const count = r.aovBuckets[i];
+        const sharePct = r.closed ? count/r.closed*100 : 0;
+        return `<td class="num">${fmtNum(count)}<div class="foot-note" style="margin:1px 0 0;">${sharePct.toFixed(1)}%</div></td>`;
+      }).join('');
+      return `<tr><td>${r.name}</td><td class="num">${fmtINR(r.aovPost)}</td><td class="num">${fmtNum(r.closed)}</td>${bucketCells}</tr>`;
+    }).join('') || `<tr><td colspan="${3+AOV_BUCKETS.length}" style="color:var(--muted);">No closed orders in range</td></tr>`;
+  }
 }
 
 
