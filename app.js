@@ -257,6 +257,7 @@ function render(){
   renderAttach(items, orders);
   renderCustomers();
   renderQuality();
+  renderNewPartnerQuality();
   renderStakeholderReport();
   renderHubLevel(orders, bookingFailedOrders, slotRequests);
   renderRLTrend();
@@ -1428,6 +1429,106 @@ function renderWoWMoM(){
       }
     }
   });
+}
+
+// ================= NEW PARTNER QUALITY =================
+// "New partner" cohorts, grouped by the Monday-week of each beautician's first-ever Closed
+// job — we don't have an explicit approval/onboarding date anywhere in the data, so first
+// job date is used as the proxy. All-time, not affected by the main date filter.
+function renderNewPartnerQuality(){
+  const weekBodyEl = document.getElementById('newPartnerWeekBody');
+  if(!weekBodyEl) return;
+
+  function norm(s){ return (s||'').replace(/\s+/g,' ').trim().toLowerCase(); }
+
+  const byProv = {};
+  ALL_ORDERS.forEach(o=>{
+    if(o.spModel==='Test Orders' || o.status!=='Closed' || !o.provider || !o.scheduled) return;
+    const p = byProv[o.provider] = byProv[o.provider] || { closedCount:0, firstDate:null, lastDate:null, spModel:o.spModel, zoneCounts:{} };
+    p.closedCount++;
+    if(!p.firstDate || o.scheduled < p.firstDate) p.firstDate = o.scheduled;
+    if(!p.lastDate || o.scheduled > p.lastDate) p.lastDate = o.scheduled;
+    p.spModel = o.spModel; // last-seen spModel wins (most current classification)
+    if(o.lat && o.lng){
+      const z = findHubZone(o.lat, o.lng);
+      if(z) p.zoneCounts[z] = (p.zoneCounts[z]||0)+1;
+    }
+  });
+
+  const ratingsByProv = {};
+  ALL_REVIEWS.forEach(r=>{
+    const k = norm(r.artist);
+    (ratingsByProv[k] = ratingsByProv[k] || []).push(r.rating);
+  });
+
+  const profiles = Object.entries(byProv).map(([name,p])=>{
+    const weekMonday = isoLocal(mondayOf(new Date(p.firstDate+'T00:00:00')));
+    const ratings = ratingsByProv[norm(name)] || [];
+    const n = ratings.length;
+    const avgRating = n ? ratings.reduce((s,x)=>s+x,0)/n : null;
+    const share5 = n ? ratings.filter(x=>x===5).length/n*100 : null;
+    const shareBelow4 = n ? ratings.filter(x=>x<4).length/n*100 : null;
+    const topZone = Object.entries(p.zoneCounts).sort((a,b)=>b[1]-a[1])[0];
+    const daysActive = Math.round((new Date(todayISO+'T00:00:00') - new Date(p.firstDate+'T00:00:00')) / 86400000);
+    return { name, weekMonday, spModel:p.spModel, zone: topZone ? topZone[0] : '—', firstDate:p.firstDate, lastDate:p.lastDate, closedCount:p.closedCount, ratingsCount:n, avgRating, share5, shareBelow4, daysActive };
+  });
+
+  const byWeek = {};
+  profiles.forEach(p=>{
+    const w = byWeek[p.weekMonday] = byWeek[p.weekMonday] || { members:[], closedSum:0, pooledRatings:[] };
+    w.members.push(p);
+    w.closedSum += p.closedCount;
+    w.pooledRatings.push(...(ratingsByProv[norm(p.name)] || []));
+  });
+
+  const weekRows = Object.entries(byWeek).map(([week,w])=>{
+    const n = w.pooledRatings.length;
+    const avgRating = n ? w.pooledRatings.reduce((s,x)=>s+x,0)/n : null;
+    const share5 = n ? w.pooledRatings.filter(x=>x===5).length/n*100 : null;
+    const shareBelow4 = n ? w.pooledRatings.filter(x=>x<4).length/n*100 : null;
+    return { week, count:w.members.length, closedSum:w.closedSum, ratingsCount:n, avgRating, share5, shareBelow4 };
+  }).sort((a,b)=>b.week.localeCompare(a.week));
+
+  weekBodyEl.innerHTML = weekRows.map(w=>`
+    <tr>
+      <td>${w.week}</td>
+      <td class="num">${fmtNum(w.count)}</td>
+      <td class="num">${fmtNum(w.closedSum)}</td>
+      <td class="num">${fmtNum(w.ratingsCount)}</td>
+      <td class="num">${w.avgRating!=null ? w.avgRating.toFixed(2) : '—'}</td>
+      <td class="num">${w.share5!=null ? w.share5.toFixed(0)+'%' : '—'}</td>
+      <td class="num">${w.shareBelow4!=null ? w.shareBelow4.toFixed(0)+'%' : '—'}</td>
+    </tr>
+  `).join('') || '<tr><td colspan="7" style="color:var(--muted);">No closed jobs found</td></tr>';
+
+  const selectEl = document.getElementById('newPartnerWeekSelect');
+  if(selectEl){
+    if(!selectEl.dataset.init){
+      selectEl.dataset.init = '1';
+      selectEl.addEventListener('change', renderNewPartnerQuality);
+    }
+    const prevValue = selectEl.value;
+    selectEl.innerHTML = weekRows.map(w=>`<option value="${w.week}">${w.week} (${w.count} new)</option>`).join('');
+    if(weekRows.some(w=>w.week===prevValue)) selectEl.value = prevValue;
+    const selectedWeek = selectEl.value || (weekRows[0] && weekRows[0].week);
+
+    const members = (byWeek[selectedWeek] ? byWeek[selectedWeek].members : []).slice().sort((a,b)=>(b.avgRating ?? -1)-(a.avgRating ?? -1));
+    document.getElementById('newPartnerBeauticianBody').innerHTML = members.map(p=>`
+      <tr>
+        <td>${p.name}</td>
+        <td>${p.zone}</td>
+        <td>${p.spModel}</td>
+        <td>${p.firstDate}</td>
+        <td class="num">${fmtNum(p.daysActive)}</td>
+        <td class="num">${fmtNum(p.closedCount)}</td>
+        <td class="num">${fmtNum(p.ratingsCount)}</td>
+        <td class="num">${p.avgRating!=null ? p.avgRating.toFixed(2) : '—'}</td>
+        <td class="num">${p.share5!=null ? p.share5.toFixed(0)+'%' : '—'}</td>
+        <td class="num">${p.shareBelow4!=null ? p.shareBelow4.toFixed(0)+'%' : '—'}</td>
+        <td>${p.lastDate}</td>
+      </tr>
+    `).join('') || '<tr><td colspan="11" style="color:var(--muted);">No partners in this cohort</td></tr>';
+  }
 }
 
 // ================= STAKEHOLDER REPORT =================
